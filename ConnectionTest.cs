@@ -1,0 +1,155 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+
+public class Rocket : MonoBehaviour
+{
+    float predictedEngineStart;
+    public Vector3 predictedLandingCoordinate;
+    public float predictedSecond;
+    private float thrustToPathX;
+    private float thrustToPathZ;
+
+    Rigidbody rb;
+    float thrustForce = 700000f; // 700 kN converted to Newtons (N)
+    public GameObject locationOfThrust;
+    public float rocketMass = 9000f; // Initial mass of 9000 kg
+
+    bool thrusting = false;
+    bool manualThrusting = false;
+    Vector3 landPosition = new Vector3(0f, 1.5f, 0f);
+
+    float throttle = 1f;
+
+    bool dead = false;
+    public Transform startForce;
+    Vector3 thrustDir = Vector3.zero;
+    public Text text;
+
+    Thread thread;
+    public int connectionPort = 25001;
+    TcpListener server;
+    TcpClient client;
+    bool running;
+    float receivedThrustForce; // Variable to store the received thrust force
+
+    void Start()
+    {
+        rb = GetComponent<Rigidbody>();
+        rb.AddForce((startForce.position - transform.position) * 10f, ForceMode.Acceleration);
+
+        dead = false;
+
+        // Receive on a separate thread so Unity doesn't freeze waiting for data
+        ThreadStart ts = new ThreadStart(GetData);
+        thread = new Thread(ts);
+        thread.Start();
+    }
+
+    void GetData()
+    {
+        // Create the server
+        server = new TcpListener(IPAddress.Any, connectionPort);
+        server.Start();
+        // Create a client to get the data stream
+        client = server.AcceptTcpClient();
+        // Start listening
+        running = true;
+        while (running)
+        {
+            Connection();
+        }
+        server.Stop();
+    }
+
+    void Connection()
+    {
+        // Read data from the network stream
+        NetworkStream nwStream = client.GetStream();
+        byte[] buffer = new byte[client.ReceiveBufferSize];
+        int bytesRead = nwStream.Read(buffer, 0, client.ReceiveBufferSize);
+        // Decode the bytes into a string
+        string dataReceived = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+        // Make sure we're not getting an empty string
+        dataReceived.Trim();
+        if (dataReceived != null && dataReceived != "")
+        {
+            // Convert the received string of data to a float
+            receivedThrustForce = float.Parse(dataReceived);
+            nwStream.Write(buffer, 0, bytesRead);
+        }
+    }
+
+    void Update()
+    {
+        predictedLandingCoordinate.x = transform.position.x + predictedSecond * rb.velocity.x;
+        predictedLandingCoordinate.z = transform.position.z + predictedSecond * rb.velocity.z;
+
+        thrustToPathX = Mathf.Clamp(predictedLandingCoordinate.x * 0.035f, -0.45f, 0.45f);
+        thrustToPathZ = Mathf.Clamp(predictedLandingCoordinate.z * 0.035f, -0.45f, 0.45f);
+
+        Vector2 autoThrustDirecion = new Vector2(-transform.up.x - thrustToPathX, -transform.up.z - thrustToPathZ);
+
+        Vector2 thrustDirection = autoThrustDirecion - new Vector2(-rb.angularVelocity.z, rb.angularVelocity.x) * 0.5f - new Vector2(rb.velocity.x, rb.velocity.z).normalized * Mathf.Clamp((10 - Vector3.Distance(transform.position, landPosition)) * 0.05f, 0, 0.2f); //dampens the swaying back and fourth
+
+        thrustDir = transform.TransformVector(Vector3.ClampMagnitude(new Vector3(-thrustDirection.x, 1, -thrustDirection.y), 1));
+
+        float forceOfRocket = 0.75f * receivedThrustForce / rocketMass - 9.81f; // Use receivedThrustForce instead of thrustForce
+        float a = forceOfRocket;
+        float b = -rb.velocity.magnitude;
+        float c = transform.position.y - landPosition.y; //add a constant to keep the rocket a bit lower offset when engines turn off
+        float d = transform.position.y - landPosition.y - new Vector2(predictedLandingCoordinate.x, predictedLandingCoordinate.z).magnitude * 0.5f - thrustDirection.magnitude * 0.5f;
+        predictedLandingCoordinate.y = -Mathf.Pow(b, 2) / (4 * a) + c;
+        predictedEngineStart = -Mathf.Pow(b, 2) / (4 * a) + d;
+        predictedSecond = -b / (2 * a);
+
+        //control throttle
+        if (predictedLandingCoordinate.y > 0) throttle = 0.65f;
+        else if (predictedLandingCoordinate.y < 0) throttle = 1f;
+
+        if (rb.velocity.magnitude < 1.5f || (Vector3.Distance(landPosition, transform.position) < 5f && rb.velocity.y > -0.1f)) { thrusting = false; dead = true; }
+        else if (predictedLandingCoordinate.y > 5f) { thrusting = false; }
+        else if (predictedEngineStart < 0f && !dead) thrusting = true;
+
+        if (Input.GetKeyDown(KeyCode.Space)) { manualThrusting = true; dead = false; }
+        else if (Input.GetKeyUp(KeyCode.Space)) manualThrusting = false;
+
+        if (thrusting || manualThrusting)
+        {
+            locationOfThrust.GetComponentInChildren<ParticleSystem>().Play();
+            rb.AddForceAtPosition(throttle * 50 * thrustDir * Time.deltaTime * receivedThrustForce / rocketMass, locationOfThrust.transform.position, ForceMode.Acceleration); // Use receivedThrustForce instead of thrustForce
+        }
+        else
+        {
+            locationOfThrust.GetComponentInChildren<ParticleSystem>().Stop();
+        }
+
+        locationOfThrust.transform.localRotation = Quaternion.EulerAngles(Mathf.Clamp(-thrustDirection.y, -1, 1), 0, Mathf.Clamp(thrustDirection.x, -1, 1));
+
+        text.text = "" + predictedSecond.ToString("#.0"); ;
+
+        // Update rocket mass based on mass flow rate
+        rocketMass -= 278.5f * Time.deltaTime; // Assuming constant mass flow rate of 278.5 kg/s
+    }
+
+    private void OnDrawGizmos()
+    {
+        Gizmos.color = Color.red;
+        Gizmos.DrawSphere(new Vector3(predictedLandingCoordinate.x, predictedLandingCoordinate.y, predictedLandingCoordinate.z), 0.5f);
+        Gizmos.color = Color.white;
+        Gizmos.DrawSphere(new Vector3(predictedLandingCoordinate.x, predictedEngineStart, predictedLandingCoordinate.z), 0.5f);
+        Gizmos.color = Color.blue;
+        Gizmos.DrawSphere(new Vector3(thrustToPathX, transform.position.y, thrustToPathZ), 0.2f);
+        Gizmos.DrawLine(transform.position, transform.position + new Vector3(transform.up.x, -0.1f, transform.up.z).normalized * 20);
+        Gizmos.color = Color.green;
+        Gizmos.DrawLine(transform.position, new Vector3(predictedLandingCoordinate.x, predictedEngineStart, predictedLandingCoordinate.z));
+        Gizmos.color = Color.yellow;
+        Gizmos.DrawSphere(transform.position + new Vector3(thrustDir.x, -0.1f, thrustDir.z).normalized * 20, 1f);
+        Gizmos.DrawLine(transform.position, transform.position + new Vector3(thrustDir.x, -0.1f, thrustDir.z).normalized * 20);
+    }
+}
