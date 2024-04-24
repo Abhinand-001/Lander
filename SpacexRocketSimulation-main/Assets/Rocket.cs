@@ -12,8 +12,9 @@ public class Rocket : MonoBehaviour
     private float thrustToPathZ;
 
     Rigidbody rb;
-    float thrustForce = 15.696f;
+    float thrustForce = 700000f; // 700 kN converted to Newtons (N)
     public GameObject locationOfThrust;
+    public float rocketMass = 9000f; // Initial mass of 9000 kg
 
     bool thrusting = false;
     bool manualThrusting = false;
@@ -48,7 +49,7 @@ public class Rocket : MonoBehaviour
 
         thrustDir = transform.TransformVector(Vector3.ClampMagnitude(new Vector3(-thrustDirection.x, 1, -thrustDirection.y), 1));
 
-        float forceOfRocket = 0.75f * thrustForce - 9.81f;
+        float forceOfRocket = 0.75f * thrustForce / rocketMass - 9.81f; // Adjust thrust force based on current mass
         float a = forceOfRocket;
         float b = -rb.velocity.magnitude;
         float c = transform.position.y - landPosition.y; //add a constant to keep the rocket a bit lower offset when engines turn off
@@ -71,7 +72,7 @@ public class Rocket : MonoBehaviour
         if (thrusting || manualThrusting)
         {
             locationOfThrust.GetComponentInChildren<ParticleSystem>().Play();
-            rb.AddForceAtPosition(throttle * 50 * thrustDir * Time.deltaTime * thrustForce, locationOfThrust.transform.position, ForceMode.Acceleration);
+            rb.AddForceAtPosition(throttle * 50 * thrustDir * Time.deltaTime * thrustForce / rocketMass, locationOfThrust.transform.position, ForceMode.Acceleration);
         }
         else
         {
@@ -81,6 +82,9 @@ public class Rocket : MonoBehaviour
         locationOfThrust.transform.localRotation = Quaternion.EulerAngles(Mathf.Clamp(-thrustDirection.y, -1, 1), 0, Mathf.Clamp(thrustDirection.x, -1, 1));
 
         text.text = "" + predictedSecond.ToString("#.0"); ;
+
+        // Update rocket mass based on mass flow rate
+        rocketMass -= 278.5f * Time.deltaTime; // Assuming constant mass flow rate of 278.5 kg/s
     }
 
     private void OnDrawGizmos()
